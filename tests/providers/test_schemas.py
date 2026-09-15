@@ -102,18 +102,48 @@ def test_token_usage_defaults_missing_counts_to_zero() -> None:
     }
 
 
-def test_provider_error_exposes_only_safe_context() -> None:
+SENSITIVE_UPSTREAM_TEXT = (
+    "sk-simulated-secret-key",
+    "Authorization: Bearer sk-simulated-secret-key",
+    '{"error":"simulated private response body"}',
+)
+
+
+@pytest.mark.parametrize("upstream_text", SENSITIVE_UPSTREAM_TEXT)
+def test_provider_error_rejects_arbitrary_upstream_text(upstream_text: str) -> None:
     from app.providers.errors import ProviderRequestError
 
-    error = ProviderRequestError(
-        "provider request failed",
-        provider="zhipu",
-        status_code=400,
-    )
+    with pytest.raises(TypeError) as exc_info:
+        ProviderRequestError(upstream_text, provider="zhipu", status_code=400)
 
-    assert str(error) == "provider request failed"
+    assert upstream_text not in str(exc_info.value)
+    assert upstream_text not in repr(exc_info.value)
+    assert upstream_text not in repr(exc_info.value.args)
+    assert upstream_text not in repr(vars(exc_info.value))
+
+
+def test_provider_error_exposes_only_generated_safe_context() -> None:
+    from app.providers.errors import ProviderRequestError
+
+    error = ProviderRequestError(provider="zhipu", status_code=400)
+
+    assert str(error) == "provider request failed (provider=zhipu, status_code=400)"
+    assert repr(error) == (
+        "ProviderRequestError("
+        "'provider request failed (provider=zhipu, status_code=400)'"
+        ")"
+    )
+    assert error.args == (
+        "provider request failed (provider=zhipu, status_code=400)",
+    )
+    assert vars(error) == {"provider": "zhipu", "status_code": 400}
     assert error.provider == "zhipu"
     assert error.status_code == 400
+    for upstream_text in SENSITIVE_UPSTREAM_TEXT:
+        assert upstream_text not in str(error)
+        assert upstream_text not in repr(error)
+        assert upstream_text not in repr(error.args)
+        assert upstream_text not in repr(vars(error))
 
 
 def test_provider_package_exports_complete_contract() -> None:
