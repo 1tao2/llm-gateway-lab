@@ -61,9 +61,18 @@ class MockProvider(BaseProvider):
             # 使用确定性模式复现故障，避免随机失败导致测试不稳定。
             raise error_type(provider="mock", status_code=status_code)
 
+        if self.mode == "normal":
+            return self._success_response(request, started)
+
         if self.mode == "slow_response":
             await asyncio.sleep(self.slow_delay_seconds)
+            return self._success_response(request, started)
 
+        raise ProviderConfigurationError(provider="mock")
+
+    def _success_response(
+        self, request: ChatRequest, started: float
+    ) -> ChatResponse:
         return ChatResponse(
             request_id=self.request_id_factory(),
             provider="mock",

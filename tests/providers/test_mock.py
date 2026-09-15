@@ -4,6 +4,7 @@ import time
 
 import pytest
 
+import app.providers.mock as mock_module
 from app.providers.errors import (
     ProviderConfigurationError,
     ProviderConnectionError,
@@ -127,3 +128,26 @@ def test_slow_response_mode_waits_for_configured_delay_and_returns_success() -> 
         "completion_tokens": 0,
         "total_tokens": 0,
     }
+
+
+def test_unhandled_validated_mode_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        mock_module,
+        "get_args",
+        lambda _: (
+            "normal",
+            "timeout",
+            "429",
+            "500",
+            "connection_error",
+            "invalid_response",
+            "slow_response",
+            "future_mode",
+        ),
+    )
+
+    async def run() -> None:
+        with pytest.raises(ProviderConfigurationError):
+            await mock_module.MockProvider(mode="future_mode").chat(_request())
+
+    asyncio.run(run())
