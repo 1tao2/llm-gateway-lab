@@ -78,8 +78,25 @@ class OpenAICompatibleProvider(BaseProvider):
         ):
             raise ProviderConfigurationError(provider=safe_provider)
 
-        self._base_url = base_url.strip().rstrip("/")
-        self._api_key = api_key.strip()
+        normalized_api_key = api_key.strip()
+        # 构造阶段验证 HTTPX 边界，避免原生异常携带密钥越过 Provider。
+        try:
+            parsed_base_url = httpx.URL(base_url.strip())
+            f"Bearer {normalized_api_key}".encode("ascii")
+        except (httpx.InvalidURL, UnicodeError, ValueError):
+            raise ProviderConfigurationError(provider=safe_provider) from None
+        if (
+            parsed_base_url.scheme not in ("http", "https")
+            or not parsed_base_url.host
+            or any(
+                ord(character) < 32 or ord(character) == 127
+                for character in api_key
+            )
+        ):
+            raise ProviderConfigurationError(provider=safe_provider)
+
+        self._base_url = str(parsed_base_url).rstrip("/")
+        self._api_key = normalized_api_key
         self._provider_name = provider_name.strip()
         self._timeout_seconds = float(timeout_seconds)
         # 仅关闭本实例创建的客户端；注入客户端的生命周期由调用方负责。

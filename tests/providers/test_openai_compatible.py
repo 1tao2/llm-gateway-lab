@@ -114,6 +114,84 @@ def test_constructor_rejects_invalid_configuration(
     assert "test-secret-key" not in str(caught.value)
 
 
+def _assert_configuration_error_is_safe(
+    error: ProviderConfigurationError,
+    api_key: str,
+) -> None:
+    assert error.provider == "safe-provider"
+    assert error.status_code is None
+    exposed_surfaces = (
+        str(error),
+        repr(error),
+        repr(error.args),
+        repr(vars(error)),
+    )
+    assert all(api_key not in surface for surface in exposed_surfaces)
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://provider.example:bad",
+        "provider.example/v1",
+        "ftp://provider.example/v1",
+    ],
+)
+def test_constructor_rejects_invalid_http_url_without_leaking_key(
+    base_url: str,
+) -> None:
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200)
+
+    async def run() -> ProviderConfigurationError:
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            with pytest.raises(ProviderConfigurationError) as caught:
+                OpenAICompatibleProvider(
+                    base_url=base_url,
+                    api_key="test-url-secret-key",
+                    provider_name="safe-provider",
+                    client=client,
+                )
+            return caught.value
+        finally:
+            await client.aclose()
+
+    error = asyncio.run(run())
+
+    _assert_configuration_error_is_safe(error, "test-url-secret-key")
+
+
+@pytest.mark.parametrize(
+    "api_key",
+    [
+        "sk-unicode-密钥",
+        "sk-line\r\nInjected: yes",
+    ],
+)
+def test_constructor_rejects_unsafe_authorization_key(api_key: str) -> None:
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200)
+
+    async def run() -> ProviderConfigurationError:
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            with pytest.raises(ProviderConfigurationError) as caught:
+                OpenAICompatibleProvider(
+                    base_url="https://provider.example/v1",
+                    api_key=api_key,
+                    provider_name="safe-provider",
+                    client=client,
+                )
+            return caught.value
+        finally:
+            await client.aclose()
+
+    error = asyncio.run(run())
+
+    _assert_configuration_error_is_safe(error, api_key)
+
+
 @pytest.mark.parametrize(
     ("status_code", "error_type"),
     [
