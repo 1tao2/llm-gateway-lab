@@ -10,13 +10,18 @@ from app.providers.errors import (
     ProviderServerError,
     ProviderTimeoutError,
 )
+from app.providers.mock import MockProvider
+from app.providers.openai_compatible import OpenAICompatibleProvider
 from app.providers.schemas import ChatMessage, ChatRequest, ChatResponse, TokenUsage
+from app.providers.zhipu import ZhipuProvider
 
 __all__ = [
     "BaseProvider",
     "ChatMessage",
     "ChatRequest",
     "ChatResponse",
+    "MockProvider",
+    "OpenAICompatibleProvider",
     "ProviderAuthenticationError",
     "ProviderConfigurationError",
     "ProviderConnectionError",
@@ -27,4 +32,5 @@ __all__ = [
     "ProviderServerError",
     "ProviderTimeoutError",
     "TokenUsage",
+    "ZhipuProvider",
 ]

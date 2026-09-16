@@ -2,7 +2,7 @@
 
 面向 FDE 学习与实践的、可靠性导向的多供应商 LLM 网关。
 
-当前完成 Phase 0：FastAPI 工程骨架、统一配置、健康检查与自动化测试。此阶段不需要智谱 API Key，也不会产生模型调用费用。
+当前完成 Phase 1 Provider SDK：业务代码通过统一请求、响应和异常边界使用 Mock、OpenAI 兼容及智谱实现。Phase 0 的健康检查保持不变。
 
 ## 环境要求
 
@@ -31,6 +31,42 @@ conda run -n base python -m venv .venv
 .\.venv\Scripts\python -m pytest -v
 ```
 
+常规测试全部使用确定性 Mock 或 `httpx.MockTransport`，不会调用真实 API，也不会产生模型费用。
+
+## 统一 Provider 用法
+
+业务函数只依赖 `BaseProvider`，切换实现时无需修改 `ChatRequest` 或响应处理：
+
+```python
+import asyncio
+
+from app.providers import BaseProvider, ChatMessage, ChatRequest, MockProvider
+
+
+async def get_content(provider: BaseProvider, request: ChatRequest) -> str:
+    response = await provider.chat(request)
+    return response.content
+
+
+request = ChatRequest(
+    model="demo-model",
+    messages=[ChatMessage(role="user", content="你好")],
+)
+content = asyncio.run(get_content(MockProvider(), request))
+```
+
+`MockProvider` 提供七种可重复的测试模式：
+
+- `normal`：立即返回规范化成功响应。
+- `timeout`：抛出统一超时异常。
+- `429`：抛出统一限流异常。
+- `500`：抛出统一服务端异常。
+- `connection_error`：抛出统一连接异常。
+- `invalid_response`：抛出统一无效响应异常。
+- `slow_response`：延迟后返回成功响应，延迟值可配置。
+
+当前阶段仅提供单次非流式调用和供应商适配；Router 与重试、熔断等可靠性能力从后续阶段开始实现。
+
 ## 启动服务
 
 ```powershell
@@ -52,7 +88,7 @@ conda run -n base python -m venv .venv
 
 配置统一定义在 `app/config.py`，本地值放在 `.env`。`.env` 已被 Git 忽略，不要在代码、README、日志或提交历史中保存真实 API Key。
 
-智谱相关变量已在 `.env.example` 中预留，但 Phase 0 不读取或要求这些变量；它们将在 Phase 1 接入真实 Provider 时启用。
+智谱相关变量已在 `.env.example` 中预留。使用真实 Provider 时由调用方读取并注入密钥；不要在代码、README、日志、异常或提交历史中保存真实 API Key。
 
 ## 常见问题
 
