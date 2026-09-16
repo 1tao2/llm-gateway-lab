@@ -31,6 +31,6 @@ class ChatResponse(BaseModel):
     request_id: str = Field(min_length=1)
     provider: str = Field(min_length=1)
     model: str = Field(min_length=1)
-    content: str = Field(min_length=1)
+    content: str
     latency_ms: float = Field(ge=0)
     usage: TokenUsage

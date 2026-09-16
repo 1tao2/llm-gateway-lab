@@ -32,7 +32,7 @@ def test_chat_response_preserves_the_unified_contract() -> None:
     }
 
 
-@pytest.mark.parametrize("field", ["request_id", "provider", "model", "content"])
+@pytest.mark.parametrize("field", ["request_id", "provider", "model"])
 def test_chat_response_rejects_empty_required_strings(field: str) -> None:
     payload = {
         "request_id": "req_1",
@@ -46,6 +46,19 @@ def test_chat_response_rejects_empty_required_strings(field: str) -> None:
 
     with pytest.raises(ValidationError):
         ChatResponse.model_validate(payload)
+
+
+def test_chat_response_accepts_empty_content() -> None:
+    response = ChatResponse(
+        request_id="req-empty",
+        provider="mock",
+        model="mock-v1",
+        content="",
+        latency_ms=0,
+        usage=TokenUsage(),
+    )
+
+    assert response.content == ""
 
 
 def test_chat_response_rejects_negative_latency() -> None:

@@ -9,6 +9,7 @@ from app.providers.errors import (
     ProviderAuthenticationError,
     ProviderConfigurationError,
     ProviderConnectionError,
+    ProviderError,
     ProviderInvalidResponseError,
     ProviderRateLimitError,
     ProviderRequestError,
@@ -21,7 +22,7 @@ from app.providers.schemas import ChatRequest, ChatResponse, TokenUsage
 class _ResponseMessage(BaseModel):
     model_config = ConfigDict(strict=True)
 
-    content: str = Field(min_length=1)
+    content: str
 
 
 class _ResponseChoice(BaseModel):
@@ -84,10 +85,14 @@ class OpenAICompatibleProvider(BaseProvider):
             parsed_base_url = httpx.URL(base_url.strip())
             f"Bearer {normalized_api_key}".encode("ascii")
         except (httpx.InvalidURL, UnicodeError, ValueError):
-            raise ProviderConfigurationError(provider=safe_provider) from None
+            parsed_base_url = None
+        # 离开 except 后再抛出，避免 __context__ 保留 URL 或密钥。
         if (
-            parsed_base_url.scheme not in ("http", "https")
+            parsed_base_url is None
+            or parsed_base_url.scheme not in ("http", "https")
             or not parsed_base_url.host
+            # 仅允许配置的 Bearer 认证，不接收 URL 内嵌凭据。
+            or parsed_base_url.userinfo
             or any(
                 ord(character) < 32 or ord(character) == 127
                 for character in api_key
@@ -109,10 +114,13 @@ class OpenAICompatibleProvider(BaseProvider):
 
     async def chat(self, request: ChatRequest) -> ChatResponse:
         started = time.perf_counter()
+        transport_error_type: type[ProviderError] | None = None
         try:
             response = await self._client.post(
                 f"{self._base_url}/chat/completions",
                 headers={"Authorization": f"Bearer {self._api_key}"},
+                # 禁用注入客户端的默认认证，避免覆盖 Provider 的 Bearer 头。
+                auth=None,
                 json={
                     "model": request.model,
                     "messages": [message.model_dump() for message in request.messages],
@@ -120,11 +128,15 @@ class OpenAICompatibleProvider(BaseProvider):
                 timeout=self._timeout_seconds,
             )
         except httpx.TimeoutException:
-            raise ProviderTimeoutError(provider=self._provider_name) from None
-        except httpx.NetworkError:
-            raise ProviderConnectionError(provider=self._provider_name) from None
+            transport_error_type = ProviderTimeoutError
         except httpx.RequestError:
-            raise ProviderConnectionError(provider=self._provider_name) from None
+            transport_error_type = ProviderConnectionError
+        except httpx.HTTPStatusError as error:
+            # 注入客户端的响应 hook 可能提前检查状态，仍复用统一映射。
+            response = error.response
+        # 只保存分类；离开 except 后抛出，彻底断开含请求凭据的异常链。
+        if transport_error_type is not None:
+            raise transport_error_type(provider=self._provider_name)
         self._raise_for_status(response.status_code)
         try:
             payload = _OpenAIResponse.model_validate(response.json())
@@ -139,10 +151,12 @@ class OpenAICompatibleProvider(BaseProvider):
                 usage=TokenUsage(**payload.usage.model_dump()),
             )
         except (ValueError, KeyError, TypeError, IndexError):
-            raise ProviderInvalidResponseError(
-                provider=self._provider_name,
-                status_code=response.status_code,
-            ) from None
+            pass
+        # JSON/Pydantic 异常可能包含完整响应正文，不能成为安全异常的上下文。
+        raise ProviderInvalidResponseError(
+            provider=self._provider_name,
+            status_code=response.status_code,
+        )
 
     def _raise_for_status(self, status_code: int) -> None:
         # 区分认证、限流、请求与服务端错误，供后续可靠性策略判断是否重试。

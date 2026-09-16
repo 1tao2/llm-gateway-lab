@@ -7,6 +7,7 @@ from app.providers.errors import (
     ProviderAuthenticationError,
     ProviderConfigurationError,
     ProviderConnectionError,
+    ProviderError,
     ProviderInvalidResponseError,
     ProviderRateLimitError,
     ProviderRequestError,
@@ -25,6 +26,22 @@ def _request() -> ChatRequest:
             ChatMessage(role="user", content="hello"),
         ],
     )
+
+
+def _assert_provider_error_is_safe(
+    error: ProviderError,
+    *sensitive_values: str,
+) -> None:
+    exposed_surfaces = (
+        str(error),
+        repr(error),
+        repr(error.args),
+        repr(vars(error)),
+    )
+    for sensitive_value in (*sensitive_values, "Authorization"):
+        assert all(sensitive_value not in surface for surface in exposed_surfaces)
+    assert error.__context__ is None
+    assert error.__cause__ is None
 
 
 def test_chat_posts_openai_payload_and_maps_complete_response() -> None:
@@ -84,6 +101,70 @@ def test_chat_posts_openai_payload_and_maps_complete_response() -> None:
     assert response.latency_ms >= 0
 
 
+def test_chat_uses_provider_bearer_over_injected_client_basic_auth() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["Authorization"] == "Bearer test-provider-key"
+        return httpx.Response(
+            200,
+            json={
+                "id": "req-auth",
+                "model": "served-model",
+                "choices": [{"message": {"content": "authenticated"}}],
+            },
+        )
+
+    async def run() -> ChatResponse:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            auth=httpx.BasicAuth("client-user", "client-password"),
+            headers={"Authorization": "Bearer client-default-key"},
+        ) as client:
+            provider = OpenAICompatibleProvider(
+                base_url="https://provider.example/v1",
+                api_key="test-provider-key",
+                client=client,
+            )
+            return await provider.chat(_request())
+
+    assert asyncio.run(run()).content == "authenticated"
+
+
+def test_chat_maps_successful_empty_content() -> None:
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "id": "req-empty",
+                "model": "served-model",
+                "choices": [{"message": {"content": ""}}],
+                "usage": {"completion_tokens": 0},
+            },
+        )
+
+    async def run() -> ChatResponse:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            provider = OpenAICompatibleProvider(
+                base_url="https://provider.example/v1",
+                api_key="test-secret-key",
+                provider_name="safe-provider",
+                client=client,
+            )
+            return await provider.chat(_request())
+
+    response = asyncio.run(run())
+
+    assert response.content == ""
+    assert response.request_id == "req-empty"
+    assert response.provider == "safe-provider"
+    assert response.model == "served-model"
+    assert response.latency_ms >= 0
+    assert response.usage.model_dump() == {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+    }
+
+
 @pytest.mark.parametrize(
     "overrides",
     [
@@ -111,7 +192,7 @@ def test_constructor_rejects_invalid_configuration(
     with pytest.raises(ProviderConfigurationError) as caught:
         OpenAICompatibleProvider(**options)
 
-    assert "test-secret-key" not in str(caught.value)
+    _assert_provider_error_is_safe(caught.value, "test-secret-key")
 
 
 def _assert_configuration_error_is_safe(
@@ -120,13 +201,7 @@ def _assert_configuration_error_is_safe(
 ) -> None:
     assert error.provider == "safe-provider"
     assert error.status_code is None
-    exposed_surfaces = (
-        str(error),
-        repr(error),
-        repr(error.args),
-        repr(vars(error)),
-    )
-    assert all(api_key not in surface for surface in exposed_surfaces)
+    _assert_provider_error_is_safe(error, api_key)
 
 
 @pytest.mark.parametrize(
@@ -135,6 +210,9 @@ def _assert_configuration_error_is_safe(
         "https://provider.example:bad",
         "provider.example/v1",
         "ftp://provider.example/v1",
+        "https://test-url-secret-key@provider.example/v1",
+        "https://user:test-url-secret-key@provider.example/v1",
+        "https://user:test-url-secret-key@provider.example:bad/v1",
     ],
 )
 def test_constructor_rejects_invalid_http_url_without_leaking_key(
@@ -193,6 +271,11 @@ def test_constructor_rejects_unsafe_authorization_key(api_key: str) -> None:
 
 
 @pytest.mark.parametrize(
+    "raise_in_response_hook",
+    [False, True],
+    ids=["plain-client", "status-raising-hook"],
+)
+@pytest.mark.parametrize(
     ("status_code", "error_type"),
     [
         (401, ProviderAuthenticationError),
@@ -206,13 +289,20 @@ def test_constructor_rejects_unsafe_authorization_key(api_key: str) -> None:
 )
 def test_chat_maps_http_status_to_safe_provider_error(
     status_code: int,
-    error_type: type[Exception],
+    error_type: type[ProviderError],
+    raise_in_response_hook: bool,
 ) -> None:
     async def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(status_code, text="sensitive-response-body")
 
-    async def run() -> Exception:
-        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    async def response_hook(response: httpx.Response) -> None:
+        response.raise_for_status()
+
+    async def run() -> ProviderError:
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            event_hooks={"response": [response_hook] if raise_in_response_hook else []},
+        )
         try:
             provider = OpenAICompatibleProvider(
                 base_url="https://provider.example/v1",
@@ -230,9 +320,9 @@ def test_chat_maps_http_status_to_safe_provider_error(
 
     assert getattr(error, "provider") == "safe-provider"
     assert getattr(error, "status_code") == status_code
-    assert "test-status-secret-key" not in str(error)
-    assert "Authorization" not in str(error)
-    assert "sensitive-response-body" not in str(error)
+    _assert_provider_error_is_safe(
+        error, "test-status-secret-key", "sensitive-response-body"
+    )
     assert not isinstance(error, httpx.HTTPStatusError)
 
 
@@ -248,12 +338,12 @@ def test_chat_maps_http_status_to_safe_provider_error(
 )
 def test_chat_maps_transport_failures_to_safe_provider_error(
     httpx_error_type: type[httpx.RequestError],
-    provider_error_type: type[Exception],
+    provider_error_type: type[ProviderError],
 ) -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         raise httpx_error_type("transport-sensitive-detail", request=request)
 
-    async def run() -> Exception:
+    async def run() -> ProviderError:
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         try:
             provider = OpenAICompatibleProvider(
@@ -272,8 +362,9 @@ def test_chat_maps_transport_failures_to_safe_provider_error(
 
     assert getattr(error, "provider") == "safe-provider"
     assert getattr(error, "status_code") is None
-    assert "test-transport-secret-key" not in str(error)
-    assert "transport-sensitive-detail" not in str(error)
+    _assert_provider_error_is_safe(
+        error, "test-transport-secret-key", "transport-sensitive-detail"
+    )
     assert not isinstance(error, httpx.RequestError)
 
 
@@ -281,6 +372,9 @@ def test_chat_maps_transport_failures_to_safe_provider_error(
     "response_kwargs",
     [
         pytest.param({"content": b"sensitive-invalid-json"}, id="invalid-json"),
+        pytest.param(
+            {"content": b"\xffsensitive-invalid-json"}, id="invalid-json-encoding"
+        ),
         pytest.param(
             {"json": {"id": "req-1", "model": "model-1", "choices": []}},
             id="empty-choices",
@@ -367,8 +461,9 @@ def test_chat_translates_malformed_success_payload(
 
     assert error.provider == "safe-provider"
     assert error.status_code == 200
-    assert "test-response-secret-key" not in str(error)
-    assert "sensitive-invalid-json" not in str(error)
+    _assert_provider_error_is_safe(
+        error, "test-response-secret-key", "sensitive-invalid-json"
+    )
 
 
 @pytest.mark.parametrize(
