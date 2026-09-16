@@ -164,7 +164,8 @@ class OpenAICompatibleProvider(BaseProvider):
             error_type = ProviderAuthenticationError
         elif status_code == 429:
             error_type = ProviderRateLimitError
-        elif 400 <= status_code < 500:
+        # 重定向同样表示请求未完成，避免响应 hook 抛错后继续解析未读响应。
+        elif 300 <= status_code < 500:
             error_type = ProviderRequestError
         elif status_code >= 500:
             error_type = ProviderServerError

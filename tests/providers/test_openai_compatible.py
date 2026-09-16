@@ -326,6 +326,55 @@ def test_chat_maps_http_status_to_safe_provider_error(
     assert not isinstance(error, httpx.HTTPStatusError)
 
 
+def test_chat_maps_unread_redirect_hook_error_to_safe_provider_error() -> None:
+    class UnreadRedirectStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"sensitive-redirect-body"
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            302,
+            headers={
+                "Location": "https://redirect-secret.example/next?token=header-secret"
+            },
+            stream=UnreadRedirectStream(),
+        )
+
+    async def response_hook(response: httpx.Response) -> None:
+        response.raise_for_status()
+
+    async def run() -> ProviderRequestError:
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            event_hooks={"response": [response_hook]},
+        )
+        try:
+            provider = OpenAICompatibleProvider(
+                base_url="https://url-secret.example/v1",
+                api_key="test-redirect-secret-key",
+                provider_name="safe-provider",
+                client=client,
+            )
+            with pytest.raises(ProviderRequestError) as caught:
+                await provider.chat(_request())
+            return caught.value
+        finally:
+            await client.aclose()
+
+    error = asyncio.run(run())
+
+    assert error.provider == "safe-provider"
+    assert error.status_code == 302
+    _assert_provider_error_is_safe(
+        error,
+        "url-secret.example",
+        "test-redirect-secret-key",
+        "sensitive-redirect-body",
+        "redirect-secret.example",
+        "header-secret",
+    )
+
+
 @pytest.mark.parametrize(
     ("httpx_error_type", "provider_error_type"),
     [
