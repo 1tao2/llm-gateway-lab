@@ -163,6 +163,7 @@ venv.bak/
 .tmp/
 pytest-cache-files-*/
 .worktrees/
+.superpowers/sdd/
 
 # Spyder project settings
 .spyderproject
