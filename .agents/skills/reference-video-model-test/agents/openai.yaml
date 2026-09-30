@@ -1,0 +1,4 @@
+interface:
+  display_name: "参考生视频模型测试"
+  short_description: "完成多参考视频模型的资产校验、并发生成、耗时采集与规范报告"
+  default_prompt: "使用 $reference-video-model-test 校验我的视频提示词和资产，并在授权后完成模型测试与报告。"
