@@ -282,7 +282,7 @@ Expected: FAIL because `load_router_config` does not exist.
 
 - [ ] **Step 4: Implement safe loading and sample configuration**
 
-Read with UTF-8, call `yaml.safe_load`, then `RouterConfig.model_validate`. Catch `OSError`, `yaml.YAMLError`, and Pydantic `ValidationError` and raise `RouterConfigurationError(f"无法加载路由配置: {path}")` using exception chaining. Create `configs/models.yaml` with one enabled Mock primary and one disabled Zhipu backup so the repository default cannot trigger a paid call.
+Read with UTF-8, call `yaml.safe_load`, then `RouterConfig.model_validate`. Catch `OSError`, `UnicodeDecodeError`, `yaml.YAMLError`, and Pydantic `ValidationError`, retain only a failure flag/result, and raise `RouterConfigurationError(f"无法加载路由配置: {path}")` after leaving the `except` block. Both `__cause__` and `__context__` must be `None`; formatted tracebacks must not expose configuration contents or validator details. Cover invalid UTF-8 and synthetic secret markers in the loader tests. Create `configs/models.yaml` with one enabled Mock primary and one disabled Zhipu backup so the repository default cannot trigger a paid call.
 
 - [ ] **Step 5: Run loader tests**
 

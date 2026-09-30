@@ -1,9 +1,13 @@
 from pathlib import Path
+import traceback
 
 import pytest
 
 from app.router.config import load_router_config
 from app.router.errors import RouterConfigurationError
+
+
+SECRET_MARKER = "SYNTHETIC_CONFIG_SECRET"
 
 
 def test_load_valid_router_config(tmp_path: Path) -> None:
@@ -34,21 +38,25 @@ def test_missing_file_has_safe_configuration_error(tmp_path: Path) -> None:
         load_router_config(path)
 
     assert str(error.value) == f"无法加载路由配置: {path}"
-    assert isinstance(error.value.__cause__, OSError)
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
+    formatted = "".join(traceback.format_exception(error.value))
+    assert "FileNotFoundError" not in formatted
+    assert SECRET_MARKER not in formatted
 
 
 @pytest.mark.parametrize(
     "contents",
     [
-        "capabilities: [unclosed",
-        "secret-scalar",
-        "[secret-list]",
-        "null",
-        "capabilities: {}\n# secret-empty",
+        f"capabilities: [{SECRET_MARKER}",
+        SECRET_MARKER,
+        f"[{SECRET_MARKER}]",
+        f"null\n# {SECRET_MARKER}",
+        f"capabilities: {{}}\n# {SECRET_MARKER}",
         "capabilities:\n  text_generation:\n    routes:\n"
         "      - channel: chat\n        provider: mock\n"
         "        model: mock-primary\n        priority: 1\n"
-        "        illegal: secret-field",
+        f"        illegal: {SECRET_MARKER}",
     ],
     ids=["malformed", "scalar", "list", "null", "empty-capabilities", "illegal-field"],
 )
@@ -60,9 +68,28 @@ def test_invalid_yaml_has_safe_configuration_error(tmp_path: Path, contents: str
         load_router_config(path)
 
     assert str(error.value) == f"无法加载路由配置: {path}"
-    assert error.value.__cause__ is not None
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
     assert contents not in str(error.value)
-    assert "secret" not in str(error.value)
+    formatted = "".join(traceback.format_exception(error.value))
+    assert SECRET_MARKER not in formatted
+    assert "ValidationError" not in formatted
+    assert "ParserError" not in formatted
+
+
+def test_invalid_utf8_has_safe_configuration_error(tmp_path: Path) -> None:
+    path = tmp_path / "models.yaml"
+    path.write_bytes(SECRET_MARKER.encode("utf-8") + b"\xff")
+
+    with pytest.raises(RouterConfigurationError) as error:
+        load_router_config(path)
+
+    assert str(error.value) == f"无法加载路由配置: {path}"
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
+    formatted = "".join(traceback.format_exception(error.value))
+    assert SECRET_MARKER not in formatted
+    assert "UnicodeDecodeError" not in formatted
 
 
 def test_loads_utf8_content(tmp_path: Path) -> None:

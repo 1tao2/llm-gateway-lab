@@ -2,7 +2,7 @@
 
 面向 FDE 学习与实践的、可靠性导向的多供应商 LLM 网关。
 
-当前完成 Phase 1 Provider SDK：业务代码通过统一请求、响应和异常边界使用 Mock、OpenAI 兼容及智谱实现。Phase 0 的健康检查保持不变。
+当前已完成 Phase 2 Model Registry 与 Router：在 Phase 1 统一 Provider SDK 基础上，支持 Provider/模型注册、YAML 路由配置、候选排序和最高优先级模型的单次调用。Phase 0 的健康检查保持不变。
 
 ## 环境要求
 
@@ -65,7 +65,40 @@ content = asyncio.run(get_content(MockProvider(), request))
 - `invalid_response`：抛出统一无效响应异常。
 - `slow_response`：延迟后返回成功响应，延迟值可配置。
 
-当前阶段仅提供单次非流式调用和供应商适配；Router 与重试、熔断等可靠性能力从后续阶段开始实现。
+## Router 用法
+
+以下示例只使用 Mock，无需网络或密钥，通过公开 API 构建注册表和路由配置：
+
+```python
+import asyncio
+
+from app.providers import ChatMessage, ChatRequest, MockProvider
+from app.router import (
+    CapabilityConfig, ModelRegistration, ModelRegistry, ModelRouter,
+    ProviderRegistry, RouteConfig, RouterConfig,
+)
+
+providers = ProviderRegistry()
+providers.register("mock", MockProvider())
+models = ModelRegistry()
+models.register(ModelRegistration(provider="mock", model="mock-primary"))
+config = RouterConfig(capabilities={
+    "text_generation": CapabilityConfig(routes=[
+        RouteConfig(
+            channel="primary", provider="mock", model="mock-primary", priority=1,
+        ),
+    ]),
+})
+router = ModelRouter(config, providers, models)
+request = ChatRequest(
+    model="business-placeholder",
+    messages=[ChatMessage(role="user", content="你好")],
+)
+response = asyncio.run(router.route("text_generation", request))
+print(response.content)
+```
+
+也可用 `load_router_config(Path("configs/models.yaml"))` 加载 YAML 配置（`Path` 来自 `pathlib`，加载函数来自 `app.router`）。候选按正整数 `priority` 升序排列，同优先级保持配置顺序，禁用的路由或模型会被过滤。`route()` 使用所选模型复制请求，调用一次最高优先级候选；Provider 异常直接传播。Retry、Fallback 与熔断尚未实现。
 
 ## 启动服务
 
