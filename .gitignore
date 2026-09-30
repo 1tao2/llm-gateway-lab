@@ -162,6 +162,7 @@ venv.bak/
 # Local task and pytest temporary files
 .tmp/
 pytest-cache-files-*/
+.worktrees/
 
 # Spyder project settings
 .spyderproject
