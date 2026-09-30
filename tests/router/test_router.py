@@ -1,6 +1,9 @@
 import pytest
 
+from app.providers.base import BaseProvider
+from app.providers.errors import ProviderTimeoutError
 from app.providers.mock import MockProvider
+from app.providers.schemas import ChatMessage, ChatRequest, ChatResponse, TokenUsage
 from app.router.errors import (
     CapabilityNotFoundError,
     ModelNotRegisteredError,
@@ -11,11 +14,38 @@ from app.router.registry import ModelRegistry, ProviderRegistry
 from app.router.schemas import ModelRegistration, RouteConfig, RouterConfig
 
 
+class RecordingProvider(BaseProvider):
+    def __init__(
+        self, response: ChatResponse | None = None, error: Exception | None = None
+    ) -> None:
+        self.requests: list[ChatRequest] = []
+        self.response = response
+        self.error = error
+
+    async def chat(self, request: ChatRequest) -> ChatResponse:
+        self.requests.append(request)
+        if self.error is not None:
+            raise self.error
+        assert self.response is not None
+        return self.response
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"
+
+
+def chat_request() -> ChatRequest:
+    return ChatRequest(
+        model="caller-model", messages=[ChatMessage(role="user", content="hello")]
+    )
+
+
 def make_router(
     routes: list[RouteConfig],
     *,
     registrations: list[ModelRegistration] | None = None,
-    providers: dict[str, MockProvider] | None = None,
+    providers: dict[str, BaseProvider] | None = None,
 ):
     from app.router.router import ModelRouter
 
@@ -213,3 +243,132 @@ def test_same_model_name_resolves_each_provider_registration() -> None:
         ("second", "second", "shared")
     ]
     assert candidates[0].provider is second
+
+
+@pytest.mark.anyio
+async def test_route_uses_first_candidate_once_and_preserves_request() -> None:
+    response = ChatResponse(
+        request_id="response-1",
+        provider="primary",
+        model="primary-model",
+        content="answer",
+        latency_ms=1.0,
+        usage=TokenUsage(),
+    )
+    primary = RecordingProvider(response=response)
+    backup = RecordingProvider()
+    router = make_router(
+        [
+            route("backup", "backup-model", 2, provider="backup"),
+            route("primary", "primary-model", 1, provider="primary"),
+        ],
+        registrations=[
+            registration("backup-model", provider="backup"),
+            registration("primary-model", provider="primary"),
+        ],
+        providers={"primary": primary, "backup": backup},
+    )
+    request = chat_request()
+    original = request.model_dump()
+
+    result = await router.route(" chat ", request)
+
+    assert result is response
+    assert len(primary.requests) == 1
+    assert primary.requests[0] is not request
+    assert primary.requests[0].model == "primary-model"
+    assert primary.requests[0].messages == request.messages
+    assert request.model_dump() == original
+    assert backup.requests == []
+
+
+@pytest.mark.anyio
+async def test_route_propagates_same_provider_timeout_without_backup() -> None:
+    timeout = ProviderTimeoutError(provider="primary")
+    primary = RecordingProvider(error=timeout)
+    backup = RecordingProvider()
+    router = make_router(
+        [
+            route("primary", "one", 1, provider="primary"),
+            route("backup", "two", 2, provider="backup"),
+        ],
+        registrations=[
+            registration("one", provider="primary"),
+            registration("two", provider="backup"),
+        ],
+        providers={"primary": primary, "backup": backup},
+    )
+
+    with pytest.raises(ProviderTimeoutError) as caught:
+        await router.route("chat", chat_request())
+
+    assert caught.value is timeout
+    assert len(primary.requests) == 1
+    assert backup.requests == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("capability", "routes", "registrations", "expected_error"),
+    [
+        (
+            "missing",
+            [route("primary", "one", 1)],
+            [registration("one")],
+            CapabilityNotFoundError,
+        ),
+        ("chat", [route("primary", "one", 1, enabled=False)], [], NoEnabledRouteError),
+        ("chat", [route("primary", "missing", 1)], [], ModelNotRegisteredError),
+    ],
+)
+async def test_route_resolution_errors_precede_provider_invocation(
+    capability: str,
+    routes: list[RouteConfig],
+    registrations: list[ModelRegistration],
+    expected_error: type[Exception],
+) -> None:
+    provider = RecordingProvider()
+    router = make_router(
+        routes, registrations=registrations, providers={"mock": provider}
+    )
+
+    with pytest.raises(expected_error):
+        await router.route(capability, chat_request())
+
+    assert provider.requests == []
+
+
+def test_router_package_exports_complete_public_api() -> None:
+    import app.router as public
+    from app.router.config import load_router_config
+    from app.router.errors import (
+        DuplicateModelError,
+        DuplicateProviderError,
+        RouterConfigurationError,
+        RouterError,
+    )
+    from app.router.router import ModelRouter
+    from app.router.schemas import CapabilityConfig, RouteCandidate
+
+    expected = {
+        "RouterError": RouterError,
+        "RouterConfigurationError": RouterConfigurationError,
+        "DuplicateProviderError": DuplicateProviderError,
+        "ProviderNotRegisteredError": ProviderNotRegisteredError,
+        "DuplicateModelError": DuplicateModelError,
+        "ModelNotRegisteredError": ModelNotRegisteredError,
+        "CapabilityNotFoundError": CapabilityNotFoundError,
+        "NoEnabledRouteError": NoEnabledRouteError,
+        "load_router_config": load_router_config,
+        "ProviderRegistry": ProviderRegistry,
+        "ModelRegistry": ModelRegistry,
+        "ModelRegistration": ModelRegistration,
+        "RouteConfig": RouteConfig,
+        "CapabilityConfig": CapabilityConfig,
+        "RouterConfig": RouterConfig,
+        "RouteCandidate": RouteCandidate,
+        "ModelRouter": ModelRouter,
+    }
+
+    assert set(public.__all__) == set(expected)
+    assert {name: getattr(public, name) for name in public.__all__} == expected

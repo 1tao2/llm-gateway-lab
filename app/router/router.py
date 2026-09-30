@@ -1,3 +1,4 @@
+from app.providers.schemas import ChatRequest, ChatResponse
 from app.router.errors import CapabilityNotFoundError, NoEnabledRouteError
 from app.router.registry import ModelRegistry, ProviderRegistry
 from app.router.schemas import RouteCandidate, RouterConfig
@@ -40,3 +41,8 @@ class ModelRouter:
             raise NoEnabledRouteError("no enabled route")
         candidates.sort(key=lambda item: (item[1].priority, item[0]))
         return tuple(candidate for _, candidate in candidates)
+
+    async def route(self, capability: str, request: ChatRequest) -> ChatResponse:
+        candidate = self.candidates(capability)[0]
+        routed_request = request.model_copy(update={"model": candidate.model})
+        return await candidate.provider.chat(routed_request)
