@@ -1,0 +1,13 @@
+capabilities:
+  text_generation:
+    routes:
+      - channel: primary
+        provider: mock
+        model: mock-primary
+        priority: 1
+        enabled: true
+      - channel: backup
+        provider: zhipu
+        model: glm-4-flash
+        priority: 2
+        enabled: false
